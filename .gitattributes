@@ -1,0 +1,2 @@
+# Same line endings on Windows and on GitHub's Linux runner, so each update only changes real data.
+* text=auto eol=lf

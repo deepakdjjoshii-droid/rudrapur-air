@@ -175,7 +175,7 @@ def read_csv(p):
 def write_csv(p, cols, rows):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=cols); w.writeheader()
+        w = csv.DictWriter(f, fieldnames=cols, lineterminator="\n"); w.writeheader()
         for k in sorted(rows): w.writerow({c: rows[k].get(c, "") for c in cols})
 
 def num(x, d=1):
