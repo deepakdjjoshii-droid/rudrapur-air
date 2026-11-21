@@ -12,9 +12,25 @@ from datetime import date, datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 IST = timezone(timedelta(hours=5, minutes=30))
 RUD = (28.98, 79.40)                       # Rudrapur town centre
-KSP = (29.2124, 78.9612)                   # Kashipur, Govt Girls Inter College (UKPCB CAAQMS)
-KSP_LOCATION = 3409409                     # OpenAQ location id of the Kashipur station
-KSP_SENSOR_FALLBACK = 12242992             # its PM2.5 sensor on 9 Nov 2026
+# Official CAAQMS monitors used to correct the forecast: OpenAQ location id, town, lat, lon, weight.
+# Kashipur is nearest and most like Rudrapur, so it counts double, but on its own it is too often offline
+# (PM2.5 on 8 full days of 52 in Oct-Nov 2026). Pooled with Moradabad and Bareilly, the correction works
+# every day, and in a back-test it predicted Kashipur's own readings at least as well as Kashipur's past week did.
+MONITORS = [
+    (3409409, "Kashipur", 29.2124, 78.9612, 2),   # Govt. Girls Inter College (UKPCB)
+    (270777, "Moradabad", 28.8567, 78.7726, 1),   # Jigar Colony (UPPCB)
+    (270697, "Moradabad", 28.8853, 78.7388, 1),   # Employment Office
+    (270771, "Moradabad", 28.8353, 78.7446, 1),   # Buddhi Vihar
+    (352777, "Moradabad", 28.8494, 78.7424, 1),   # Kashiram Nagar
+    (353715, "Moradabad", 28.8026, 78.7537, 1),   # Transport Nagar
+    (270877, "Moradabad", 28.8407, 78.6975, 1),   # Eco Herbal Park
+    (346438, "Bareilly", 28.3891, 79.4296, 1),    # Rajendra Nagar
+    (358467, "Bareilly", 28.3596, 79.4145, 1),    # Civil Lines
+]
+KSP_LOCATION = 3409409
+WINDOW = 10                                    # days of monitor data behind each day's correction
+WEIGHT = {m[0]: m[4] for m in MONITORS}
+TOWN_HI = {"Kashipur": "काशीपुर", "Moradabad": "मुरादाबाद", "Bareilly": "बरेली"}
 FIRE_BOX = "72,26,82,33"                   # west, south, east, north
 PUNJAB_HARYANA = (29.0, 32.6, 73.5, 77.6)  # lat min, lat max, lon min, lon max
 SITE_URL = os.environ.get("SITE_URL", "").strip()
@@ -77,8 +93,8 @@ def cat(pm):
 
 # ---------------------------------------------------------------- data sources
 def fetch_model(start, end):
-    pts = [RUD, KSP]
-    base = {"latitude": f"{RUD[0]},{KSP[0]}", "longitude": f"{RUD[1]},{KSP[1]}", "timezone": "Asia/Kolkata",
+    pts = [RUD] + [(m[2], m[3]) for m in MONITORS]
+    base = {"latitude": ",".join(f"{q[0]:.4f}" for q in pts), "longitude": ",".join(f"{q[1]:.4f}" for q in pts), "timezone": "Asia/Kolkata",
             "start_date": start.isoformat(), "end_date": end.isoformat()}
     aq = get("https://air-quality-api.open-meteo.com/v1/air-quality?" + urllib.parse.urlencode({**base, "hourly": "pm2_5,dust"}))
     wx = get("https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(
@@ -87,32 +103,35 @@ def fetch_model(start, end):
         raise SystemExit("Open-Meteo did not answer; nothing was changed.")
     def table(block):
         h = block["hourly"]; return {t[:13]: {k: h[k][i] for k in h if k != "time"} for i, t in enumerate(h["time"])}
-    return {"rud": table(aq[0]), "ksp": table(aq[1]), "wx": table(wx[0])}
+    mon = {m[0]: table(b) for m, b in zip(MONITORS, aq[1:])}
+    return {"rud": table(aq[0]), "mon": mon, "ksp": mon[KSP_LOCATION], "wx": table(wx[0])}
 
-def kashipur_sensor(k):
-    d = get(f"https://api.openaq.org/v3/locations/{KSP_LOCATION}", {"X-API-Key": k}) if k else None
-    try:
-        s = [x for x in d["results"][0]["sensors"] if x["parameter"]["name"] == "pm25"]
-        return s[0]["id"] if s else KSP_SENSOR_FALLBACK
-    except Exception:
-        return KSP_SENSOR_FALLBACK
+def pm25_sensor(k, loc):
+    """The location's PM2.5 sensor that reported most recently (stations keep old, dead sensors on record)."""
+    d = get(f"https://api.openaq.org/v3/locations/{loc}/sensors", {"X-API-Key": k}, tries=3)
+    s = [x for x in (d or {}).get("results", []) if x["parameter"]["name"] == "pm25"]
+    s.sort(key=lambda x: ((x.get("datetimeLast") or {}).get("utc") or ""), reverse=True)
+    return s[0]["id"] if s else None
 
 def fetch_ground(k, start):
+    """Hourly PM2.5 for every monitor: {location id: {"YYYY-MM-DDTHH": value}}."""
     if not k:
-        print("No OPENAQ_KEY: skipping the Kashipur monitor.", file=sys.stderr); return {}
-    sid, out, page = kashipur_sensor(k), {}, 1
+        print("No OPENAQ_KEY: skipping the official monitors.", file=sys.stderr); return {}
     t0 = (datetime.combine(start, datetime.min.time(), IST) - timedelta(hours=1)).astimezone(timezone.utc)
-    while True:
-        u = (f"https://api.openaq.org/v3/sensors/{sid}/hours?datetime_from={t0:%Y-%m-%dT%H:%M:%SZ}"
-             f"&limit=1000&page={page}")
-        d = get(u, {"X-API-Key": k})
-        r = (d or {}).get("results", [])
-        for h in r:
-            v = h.get("value")
-            if v is not None and 0 < v < 999:
-                out[h["period"]["datetimeFrom"]["local"][:13]] = v
-        if len(r) < 1000: break
-        page += 1; time.sleep(0.4)
+    out = {}
+    for loc, *_ in MONITORS:
+        sid, hrs, page = pm25_sensor(k, loc), {}, 1
+        while sid:
+            d = get(f"https://api.openaq.org/v3/sensors/{sid}/hours?datetime_from={t0:%Y-%m-%dT%H:%M:%SZ}&limit=1000&page={page}", {"X-API-Key": k})
+            r = (d or {}).get("results", [])
+            for h in r:
+                v = h.get("value")
+                if v is not None and 0 < v < 999:
+                    hrs[h["period"]["datetimeFrom"]["local"][:13]] = v
+            if len(r) < 1000: break
+            page += 1; time.sleep(0.4)
+        out[loc] = hrs
+        time.sleep(0.3)
     return out
 
 def fetch_fires(k, start, end):
@@ -155,13 +174,22 @@ def sector(deg): return SECTORS[int(((deg or 0) + 22.5) // 45) % 8]
 
 def hours_of(day): return [f"{day.isoformat()}T{h:02d}" for h in range(24)]
 
-def factor_for(day, ground, model_ksp):
-    """Ratio of Kashipur monitor to model at Kashipur over the 7 days ending on `day`."""
-    ts = [t for t in ground if t in model_ksp and model_ksp[t].get("pm2_5") is not None
-          and (day - timedelta(days=6)).isoformat() <= t[:10] <= day.isoformat()]
-    if len(ts) < 36: return None, len(ts)
-    f = sum(ground[t] for t in ts) / max(1e-6, sum(model_ksp[t]["pm2_5"] for t in ts))
-    return round(min(1.5, max(0.6, f)), 2), len(ts)
+def pooled_ratio(ground, model, lo, hi):
+    """Weighted monitor/forecast ratio over all monitors and matched hours with dates lo..hi (inclusive)."""
+    g = m = 0.0; n = 0
+    for loc, hrs in ground.items():
+        w, mm = WEIGHT.get(loc, 1), model.get(loc, {})
+        for t, v in hrs.items():
+            q = mm.get(t, {}).get("pm2_5")
+            if lo <= t[:10] <= hi and q is not None:
+                g += w * v; m += w * q; n += 1
+    return (g / m if m > 0 else None), n
+
+def factor_for(day, ground, model):
+    """Pooled correction over the 10 days ending on `day` (back-tested: 7, 10 and 14 days; 10 balanced accuracy and steadiness)."""
+    f, n = pooled_ratio(ground, model, (day - timedelta(days=WINDOW - 1)).isoformat(), day.isoformat())
+    if f is None or n < 36: return None, n
+    return round(min(1.5, max(0.6, f)), 2), n
 
 # ---------------------------------------------------------------- archive
 DAILY_COLS = ["date", "final", "est_pm25", "aqi_in", "category", "model_pm25", "kashipur_pm25", "kashipur_hours",
@@ -189,28 +217,28 @@ def build(backfill_from=None):
     start = backfill_from or (today - timedelta(days=10))
     end = today + timedelta(days=3)
     print(f"Fetching {start} to {end} ...")
-    M = fetch_model(start - timedelta(days=6), end)
-    G = fetch_ground(K["OPENAQ_KEY"], start - timedelta(days=6))
+    M = fetch_model(start - timedelta(days=WINDOW), end)
+    GA = fetch_ground(K["OPENAQ_KEY"], start - timedelta(days=WINDOW))
+    G = GA.get(KSP_LOCATION, {})
     F = fetch_fires(K["FIRMS_KEY"], start - timedelta(days=1), today)
-    print(f"  model hours {len(M['rud'])}, Kashipur hours {len(G)}, fires {'n/a' if F is None else len(F)}")
+    print(f"  model hours {len(M['rud'])}, monitor hours {sum(len(v) for v in GA.values())} (Kashipur {len(G)}), fires {'n/a' if F is None else len(F)}")
 
     daily_p = os.path.join(HERE, "data", "daily.csv")
     daily = read_csv(daily_p)
-    cur_f, cur_n = factor_for(today, G, M["ksp"])
+    cur_f, cur_n = factor_for(today, GA, M["mon"])
     if cur_f is None:  # not enough monitor data this week: reuse the last saved factor
         prev = [r for k, r in sorted(daily.items()) if r.get("factor")]
         cur_f = float(prev[-1]["factor"]) if prev else 1.0
-    # today's own ratio at Kashipur, when the monitor has reported enough hours today
-    tt = [t for t in G if t[:10] == today.isoformat() and M["ksp"].get(t, {}).get("pm2_5")]
+    # today's own pooled ratio, once the monitors have reported enough hours today
+    rt, tn = pooled_ratio(GA, M["mon"], today.isoformat(), today.isoformat())
     now_f = cur_f
-    if len(tt) >= 6:
-        rt = sum(G[t] for t in tt) / sum(M["ksp"][t]["pm2_5"] for t in tt)
+    if rt is not None and tn >= 12:
         now_f = round(min(1.5, max(0.5, 0.5 * cur_f + 0.5 * rt)), 2)
-    print(f"  7-day factor {cur_f} ({cur_n} h); today's blended factor {now_f} ({len(tt)} h today)")
+    print(f"  {WINDOW}-day factor {cur_f} ({cur_n} h); today's blended factor {now_f} ({tn} h today)")
     # past days: their own 7-day factor, or the nearest day that had enough monitor hours
     fac, d = {}, start
     while d < today:
-        fac[d] = factor_for(d, G, M["ksp"]); d += timedelta(days=1)
+        fac[d] = factor_for(d, GA, M["mon"]); d += timedelta(days=1)
     good = [x for x in fac if fac[x][0] is not None]
     for x in fac:
         if fac[x][0] is None and good:
@@ -280,10 +308,18 @@ def build(backfill_from=None):
     ww = window(lambda x: True, False)
     tday = days.get(today.isoformat())
     nowp = strip[0]["pm"] if strip else None
-    ksp_now = None
-    if G:
-        lt = max(G); age = (now - datetime.strptime(lt, "%Y-%m-%dT%H").replace(tzinfo=IST)).total_seconds() / 3600
-        if age <= 8: ksp_now = {"time": lt[11:13] + ":00", "pm": round(G[lt]), "age": round(age)}
+    # latest official reading per town (stations that reported in the last 8 hours)
+    mon_now = []
+    for town in ("Kashipur", "Moradabad", "Bareilly"):
+        vals, latest = [], None
+        for loc, tw, *_ in MONITORS:
+            hrs = GA.get(loc, {})
+            if tw != town or not hrs: continue
+            lt = max(hrs)
+            if (now - datetime.strptime(lt, "%Y-%m-%dT%H").replace(tzinfo=IST)).total_seconds() <= 8 * 3600:
+                vals.append(hrs[lt]); latest = max(latest or lt, lt)
+        mon_now.append({"town": town, "pm": round(st.mean(vals)) if vals else None,
+                        "time": latest[11:13] + ":00" if latest else None})
     fc = [days[(today + timedelta(days=i)).isoformat()] for i in (1, 2, 3) if (today + timedelta(days=i)).isoformat() in days]
     hist = [daily[k] for k in sorted(daily) if k <= today.isoformat()][-30:]
 
@@ -320,9 +356,9 @@ def build(backfill_from=None):
     drv.append(("Every day: traffic, factories and brick kilns, plus damp air that turns farm fertiliser gases into fine particles.",
                 "रोज़ाना: गाड़ियाँ, फ़ैक्टरियाँ और ईंट भट्ठे, और नम हवा जो खेतों की खाद से निकली गैसों को बारीक कणों में बदल देती है।"))
 
-    data = {"updated": now.strftime("%d %b %Y, %H:%M IST"), "today": today.isoformat(), "factor": cur_f, "now_factor": now_f, "today_hours": len(tt),
+    data = {"updated": now.strftime("%d %b %Y, %H:%M IST"), "today": today.isoformat(), "factor": cur_f, "now_factor": now_f,
             "factor_hours": cur_n, "now_pm": nowp, "today_row": tday, "strip": strip, "best": bw, "worst": ww,
-            "kashipur_now": ksp_now, "forecast": fc, "history": hist, "drivers": drv}
+            "mon_now": mon_now, "today_hours": tn, "forecast": fc, "history": hist, "drivers": drv}
     render(data)
     print(f"Done. Today {tday['est_pm25'] if tday else '?'} µg/m³ ({tday['category'] if tday else '?'}), factor {cur_f} from {cur_n} h.")
 
@@ -391,9 +427,14 @@ def render(D):
           <span class="chip c-{k["key"]}">{bi(k["en"], k["hi"])}</span>
           <span class="dval"><b>{float(r["est_pm25"]):.0f}</b> µg/m³ · AQI {k["aqi"]}</span></li>''')
     drivers = "".join(f"<li>{bi(en, hi)}</li>" for en, hi in D["drivers"])
-    kn = D["kashipur_now"]
-    knote = (bi(f'Kashipur official monitor at {kn["time"]}: {kn["pm"]} µg/m³', f'काशीपुर सरकारी मॉनिटर, {kn["time"]} बजे: {kn["pm"]} µg/m³')
-             if kn else bi("The Kashipur official monitor has not reported in the last 8 hours.", "काशीपुर का सरकारी मॉनिटर पिछले 8 घंटों से डेटा नहीं दे रहा।"))
+    parts_en, parts_hi = [], []
+    for x in D["mon_now"]:
+        if x["pm"] is None:
+            parts_en.append(f'{x["town"]} offline'); parts_hi.append(f'{TOWN_HI[x["town"]]} बंद')
+        else:
+            parts_en.append(f'{x["town"]} {x["pm"]} ({x["time"]})'); parts_hi.append(f'{TOWN_HI[x["town"]]} {x["pm"]} ({x["time"]})')
+    knote = bi("Official monitors, latest PM2.5 in µg/m³: " + " · ".join(parts_en),
+               "सरकारी मॉनिटर, ताज़ा PM2.5 (µg/m³): " + " · ".join(parts_hi))
     fc_short_en = ", ".join(f'{dlabel(r["date"]).split()[0]} {cat(float(r["est_pm25"]))["en"].lower()}' for r in D["forecast"])
     fc_short_hi = ", ".join(f'{dlabel_hi(r["date"]).split()[0]} {cat(float(r["est_pm25"]))["hi"]}' for r in D["forecast"])
     link = f" {SITE_URL}" if SITE_URL else ""

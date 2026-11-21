@@ -2,10 +2,10 @@
 
 A free, public daily air bulletin for Rudrapur, Uttarakhand, in English and Hindi. Twice a day it:
 
-1. fetches the Copernicus CAMS PM2.5 forecast for Rudrapur and for the Kashipur monitor's location (Open-Meteo, no key),
-2. fetches the Kashipur official monitor (UKPCB, Govt Girls Inter College) from OpenAQ,
+1. fetches the Copernicus CAMS PM2.5 forecast for Rudrapur and for each official monitor's location (Open-Meteo, no key),
+2. fetches nine official monitors from OpenAQ: Govt Girls Inter College in Kashipur (UKPCB), six in Moradabad and two in Bareilly (UPPCB),
 3. fetches satellite fire detections for North India from NASA FIRMS,
-4. corrects Rudrapur's forecast by how far the forecast was off at Kashipur over the last 7 days, and by today's readings,
+4. corrects Rudrapur's forecast by how far the forecast was off at those monitors over the last 10 days (Kashipur counts double), and by today's readings,
 5. **saves every day to `data/daily.csv`** and every hour to `data/hourly/YYYY-MM.csv`,
 6. builds the page in `docs/index.html`.
 
@@ -50,5 +50,7 @@ Keys are read from environment variables, or from a `keys.env` file in this fold
 
 - Rudrapur has no official monitor. The figures are a corrected forecast for the town, about 40 km wide, not a street reading.
 - The forecast misses short spikes such as Diwali fireworks, and often overstates dust here.
-- If the Kashipur monitor goes quiet, the last good correction is reused.
+- Why nine monitors and not just Kashipur: the Kashipur station delivered PM2.5 on only 8 full days out of 52 in Oct–Nov 2026 (the government feed shows its particle and gas readings as "NA"). In a back-test on the days it did work, the pooled correction predicted Kashipur's own readings at least as well as Kashipur's past readings did, and it works every day. Ten days of data per correction tested about as accurate as 14 and steadier than 7.
+- `factor_hours` in `daily.csv` counts the hourly monitor readings behind that day's correction. The archive was rebuilt with this method on 22 Nov 2026; `kashipur_pm25` still holds Kashipur's own daily mean.
+- If every monitor goes quiet, the last good correction is reused.
 - Categories follow India's CPCB AQI bands for 24-hour PM2.5; the hourly strip uses the same bands as a guide.
