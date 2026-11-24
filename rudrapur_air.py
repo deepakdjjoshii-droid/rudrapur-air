@@ -322,6 +322,11 @@ def build(backfill_from=None):
                         "time": latest[11:13] + ":00" if latest else None})
     fc = [days[(today + timedelta(days=i)).isoformat()] for i in (1, 2, 3) if (today + timedelta(days=i)).isoformat() in days]
     hist = [daily[k] for k in sorted(daily) if k <= today.isoformat()][-30:]
+    # Kashipur station uptime over the last 30 complete days (evidence for the repair complaint)
+    up_days = [daily[k] for k in sorted(daily) if k < today.isoformat()][-30:]
+    up_hours = sum(int(float(r["kashipur_hours"] or 0)) for r in up_days)
+    uptime = {"days": len(up_days), "hours": up_hours, "of": 24 * len(up_days),
+              "zero": sum(1 for r in up_days if not int(float(r["kashipur_hours"] or 0)))}
 
     # drivers for today (tonight's lid, today's wind, last-2-day fires)
     drv = []
@@ -358,7 +363,7 @@ def build(backfill_from=None):
 
     data = {"updated": now.strftime("%d %b %Y, %H:%M IST"), "today": today.isoformat(), "factor": cur_f, "now_factor": now_f,
             "factor_hours": cur_n, "now_pm": nowp, "today_row": tday, "strip": strip, "best": bw, "worst": ww,
-            "mon_now": mon_now, "today_hours": tn, "forecast": fc, "history": hist, "drivers": drv}
+            "mon_now": mon_now, "uptime": uptime, "today_hours": tn, "forecast": fc, "history": hist, "drivers": drv}
     render(data)
     print(f"Done. Today {tday['est_pm25'] if tday else '?'} µg/m³ ({tday['category'] if tday else '?'}), factor {cur_f} from {cur_n} h.")
 
@@ -435,6 +440,17 @@ def render(D):
             parts_en.append(f'{x["town"]} {x["pm"]} ({x["time"]})'); parts_hi.append(f'{TOWN_HI[x["town"]]} {x["pm"]} ({x["time"]})')
     knote = bi("Official monitors, latest PM2.5 in µg/m³: " + " · ".join(parts_en),
                "सरकारी मॉनिटर, ताज़ा PM2.5 (µg/m³): " + " · ".join(parts_hi))
+    u = D.get("uptime")
+    if u and u["of"]:
+        pct = round(100 * u["hours"] / u["of"])
+        knote += "<br>" + bi(f'Kashipur station: PM2.5 reported in {u["hours"]} of {u["of"]} hours over the last {u["days"]} days ({pct}%), none at all on {u["zero"]} days.',
+                             f'काशीपुर केंद्र: पिछले {u["days"]} दिनों के {u["of"]} घंटों में से केवल {u["hours"]} घंटे PM2.5 दर्ज ({pct}%), {u["zero"]} दिन बिल्कुल नहीं।')
+    if best or worst:
+        tl_en = (f'<b>Go out:</b> {esc(best[2])}' if best else "") + (" · " if best and worst else "") + (f'<b>Windows shut:</b> {esc(worst[2])}' if worst else "")
+        tl_hi = (f'<b>बाहर जाएँ:</b> {esc(best[3])}' if best else "") + (" · " if best and worst else "") + (f'<b>खिड़कियाँ बंद:</b> {esc(worst[3])}' if worst else "")
+        topline = f'<p class="times"><span class="en">{tl_en}</span><span class="hi" lang="hi">{tl_hi}</span></p>'
+    else:
+        topline = ""
     fc_short_en = ", ".join(f'{dlabel(r["date"]).split()[0]} {cat(float(r["est_pm25"]))["en"].lower()}' for r in D["forecast"])
     fc_short_hi = ", ".join(f'{dlabel_hi(r["date"]).split()[0]} {cat(float(r["est_pm25"]))["hi"]}' for r in D["forecast"])
     link = f" {SITE_URL}" if SITE_URL else ""
@@ -457,6 +473,7 @@ def render(D):
         "{{NOW_PM}}": str(D["now_pm"]) if D["now_pm"] is not None else "–",
         "{{ADVICE}}": bi(*ADVICE[c["key"]]) if c else "",
         "{{KASHIPUR}}": knote,
+        "{{TIMES}}": topline,
         "{{STRIP}}": "".join(cells),
         "{{BEST}}": (f'<b>{bi(best[2][0].upper()+best[2][1:], best[3])}</b> <span class="muted">~{best[1]} µg/m³</span>' if best else bi("No clean daytime window in the next 24 hours.", "अगले 24 घंटों में दिन का कोई साफ़ समय नहीं।")),
         "{{WORST}}": (f'<b>{bi(worst[2][0].upper()+worst[2][1:], worst[3])}</b> <span class="muted">~{worst[1]} µg/m³</span>' if worst else "–"),

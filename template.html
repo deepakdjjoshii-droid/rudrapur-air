@@ -42,6 +42,8 @@ a{color:var(--accent)}
 .plate .nums{display:flex;gap:4px 18px;flex-wrap:wrap;line-height:1.3;font-size:15px;font-variant-numeric:tabular-nums}
 .plate .nums b{font-size:19px}
 .plate p{margin:0;font-size:17px;max-width:60ch}
+.plate .times{font-size:18px;font-variant-numeric:tabular-nums;padding:8px 12px;border-radius:8px;background:color-mix(in srgb,var(--on) 10%,transparent)}
+.plate .times b{font-weight:600}
 .note{font-size:14px;color:var(--muted);margin:0}
 /* 24h strip */
 .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;display:grid;gap:12px;min-width:0}
@@ -115,6 +117,7 @@ footer{font-size:13px;color:var(--muted)}
       <span><span class="en">Day average</span><span class="hi" lang="hi">दिन का औसत</span> <b>{{PM}}</b> µg/m³ PM2.5</span>
       <span><span class="en">This hour</span><span class="hi" lang="hi">इस घंटे</span> <b>{{NOW_PM}}</b> µg/m³</span>
     </div>
+    {{TIMES}}
     <p>{{ADVICE}}</p>
   </section>
   <p class="note">{{KASHIPUR}}</p>
