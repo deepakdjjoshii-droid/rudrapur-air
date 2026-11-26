@@ -446,8 +446,8 @@ def render(D):
         knote += "<br>" + bi(f'Kashipur station: PM2.5 reported in {u["hours"]} of {u["of"]} hours over the last {u["days"]} days ({pct}%), none at all on {u["zero"]} days.',
                              f'काशीपुर केंद्र: पिछले {u["days"]} दिनों के {u["of"]} घंटों में से केवल {u["hours"]} घंटे PM2.5 दर्ज ({pct}%), {u["zero"]} दिन बिल्कुल नहीं।')
     if best or worst:
-        tl_en = (f'<b>Go out:</b> {esc(best[2])}' if best else "") + (" · " if best and worst else "") + (f'<b>Windows shut:</b> {esc(worst[2])}' if worst else "")
-        tl_hi = (f'<b>बाहर जाएँ:</b> {esc(best[3])}' if best else "") + (" · " if best and worst else "") + (f'<b>खिड़कियाँ बंद:</b> {esc(worst[3])}' if worst else "")
+        tl_en = (f'<b>Best time outside:</b> {esc(best[2])}' if best else "") + (" · " if best and worst else "") + (f'<b>Shut windows:</b> {esc(worst[2])}' if worst else "")
+        tl_hi = (f'<b>बाहर जाने का सबसे अच्छा समय:</b> {esc(best[3])}' if best else "") + (" · " if best and worst else "") + (f'<b>खिड़कियाँ बंद रखें:</b> {esc(worst[3])}' if worst else "")
         topline = f'<p class="times"><span class="en">{tl_en}</span><span class="hi" lang="hi">{tl_hi}</span></p>'
     else:
         topline = ""
